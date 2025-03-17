@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+opencv-python
+numpy
+torch
+torchvision
+pydantic
+pdfkit
+psycopg2
+sqlalchemy
+alembic
