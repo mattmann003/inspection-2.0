@@ -1,0 +1,154 @@
+# Full AI-Powered Property Inspection SaaS Code
+
+## Backend (FastAPI + AI Video Analysis)
+
+# Install dependencies
+# pip install fastapi uvicorn opencv-python numpy torch torchvision pydantic pdfkit psycopg2 sqlalchemy alembic
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+import cv2
+import numpy as np
+import torch
+import pdfkit
+import psycopg2
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+
+app = FastAPI()
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load YOLOv8 model (for AI damage detection)
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+
+# Database setup
+DATABASE_URL = "sqlite:///./property_inspection.db"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class Inspection(Base):
+    __tablename__ = "inspections"
+    id = Column(Integer, primary_key=True, index=True)
+    findings = Column(Text)
+
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# API to upload video and analyze damage
+@app.post("/analyze-video/")
+async def analyze_video(file: UploadFile = File(...), db: SessionLocal = Depends(get_db)):
+    video_data = await file.read()
+    nparr = np.frombuffer(video_data, np.uint8)
+    cap = cv2.VideoCapture()
+    cap.open(cv2.CAP_FFMPEG, nparr)
+    
+    results = []
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        detections = model(frame)
+        for detection in detections.xyxy[0]:
+            x1, y1, x2, y2, conf, cls = detection.tolist()
+            
+            results.append({
+                "coordinates": [x1, y1, x2, y2],
+                "confidence": conf,
+                "class": int(cls)
+            })
+    
+    cap.release()
+    
+    new_inspection = Inspection(findings=str(results))
+    db.add(new_inspection)
+    db.commit()
+    db.refresh(new_inspection)
+    
+    return {"inspection_id": new_inspection.id, "detections": results}
+
+# Generate PDF Report
+@app.get("/generate-report/{inspection_id}")
+def generate_report(inspection_id: int, db: SessionLocal = Depends(get_db)):
+    inspection = db.query(Inspection).filter(Inspection.id == inspection_id).first()
+    if not inspection:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+    
+    html = f"""<html><body>
+    <h1>Property Inspection Report</h1>
+    <p>Inspection ID: {inspection.id}</p>
+    <p>Findings: {inspection.findings}</p>
+    </body></html>"""
+    
+    pdfkit.from_string(html, f"report_{inspection_id}.pdf")
+    return {"message": "Report generated", "file": f"report_{inspection_id}.pdf"}
+
+# Run API
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+## Frontend (React.js + Tailwind CSS)
+
+# Create React frontend
+# Install dependencies: npm install react-router-dom axios tailwindcss
+
+import React, { useState } from "react";
+import axios from "axios";
+
+const App = () => {
+  const [file, setFile] = useState(null);
+  const [report, setReport] = useState(null);
+
+  const handleUpload = async () => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await axios.post("http://localhost:8000/analyze-video/", formData);
+    setReport(response.data);
+  };
+
+  return (
+    <div className="p-5 text-center">
+      <h1 className="text-2xl font-bold mb-5">AI Property Inspection</h1>
+      <input type="file" onChange={(e) => setFile(e.target.files[0])} className="mb-3" />
+      <button onClick={handleUpload} className="bg-blue-500 text-white px-4 py-2 rounded">Upload & Analyze</button>
+      {report && (
+        <div className="mt-5">
+          <h2 className="text-xl">Inspection ID: {report.inspection_id}</h2>
+          <p>Findings: {JSON.stringify(report.detections)}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
+
+## Deployment (Render.com)
+
+# Steps to deploy
+# 1. Push the backend code to GitHub
+# 2. Create a new service on Render and connect your GitHub repo
+# 3. Set runtime as Python, and command as "uvicorn main:app --host 0.0.0.0 --port 8000"
+# 4. Deploy frontend on Vercel (npm run build & upload build folder)
+
+# Now your AI-powered property inspection SaaS is live!
